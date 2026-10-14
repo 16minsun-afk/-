@@ -1,0 +1,58 @@
+name: Deploy
+on:
+  workflow_dispatch:
+    inputs:
+      image_digest:
+        description: '64-character sha256 digest from a successful main CI publish (no sha256: prefix)'
+        required: true
+        type: string
+      model_version:
+        description: 'Existing validated server folder under ~/yolo-api/models, e.g. v1'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Configure reviewers and main-only deployment rules in Settings FIRST.
+    environment: production
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Deploy by verified SSH host key and wait for readiness
+        env:
+          DIGEST: ${{ inputs.image_digest }}
+          MODEL_VERSION: ${{ inputs.model_version }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$MODEL_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]]
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]
+          [[ "$DEPLOY_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$DEPLOY_PORT" =~ ^[0-9]{1,5}$ ]]
+          (( 10#$DEPLOY_PORT >= 1 && 10#$DEPLOY_PORT <= 65535 ))
+          [[ -n "$DEPLOY_SSH_KEY" && -n "$DEPLOY_KNOWN_HOSTS" ]]
+          keydir=$(mktemp -d)
+          trap 'rm -rf "$keydir"' EXIT
+          umask 077
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$keydir/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$keydir/known_hosts"
+          ssh-keygen -y -f "$keydir/key" >/dev/null
+          image="ghcr.io/16minsun-afk/yolo-api@sha256:$DIGEST"
+          ssh -i "$keydir/key" -p "$DEPLOY_PORT" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$keydir/known_hosts" \
+            -o ConnectTimeout=15 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+            "$DEPLOY_USER@$DEPLOY_HOST" "bash -s -- '$image' '$MODEL_VERSION'" < scripts/deploy.sh
