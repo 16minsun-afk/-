@@ -1,0 +1,5 @@
+-r requirements.txt
+# Install the appropriate CPU/CUDA PyTorch wheels FIRST (see README).
+ultralytics==8.4.177
+torch==2.10.0
+torchvision==0.25.0

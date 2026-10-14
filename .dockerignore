@@ -1,0 +1,9 @@
+**
+!requirements.txt
+!requirements-ml.txt
+!server/
+!server/**
+!pipeline/
+!pipeline/**
+!Dockerfile
+**/__pycache__/

@@ -1,0 +1,10 @@
+# Copy to data.local.yaml and adapt the classes and paths.
+# Relative path is resolved against this YAML file's directory.
+path: dataset
+train: images/train
+val: images/val
+# test: images/test
+names:
+  0: plastic
+  1: can
+  2: paper
