@@ -43,7 +43,11 @@ jobs:
       - name: Synthetic one-epoch training, validation, save and reload
         run: python -m scripts.smoke
       - name: Build CPU image (no dataset or weights in image)
-        run: docker build --pull -t yolo-api:ci .
+        run: |
+          docker build --pull \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            -t yolo-api:ci .
       - name: Container readiness and real-model API smoke
         run: |
           set -euo pipefail
@@ -63,6 +67,21 @@ jobs:
             -F 'file=@.ci/dataset/images/val/0.png;type=image/png' \
             http://127.0.0.1:18000/predict > reports/container-prediction.json
           python -c "import json; assert isinstance(json.load(open('reports/container-prediction.json'))['detections'], list)"
+      - name: Export the exact tested image for main-only publication
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p /tmp/tested-image
+          docker save yolo-api:ci | gzip -1 > /tmp/tested-image/image.tar.gz
+          docker image inspect --format='{{.Id}}' yolo-api:ci > /tmp/tested-image/image-id.txt
+      - name: Transfer tested image to the isolated publish job
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tested-image-${{ github.sha }}
+          path: /tmp/tested-image/
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
       - name: Keep test reports only (never private training data or models)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -80,21 +99,23 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Retrieve image from this successful workflow run
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          persist-credentials: false
-      - name: Publish tested source as an immutable-addressable image
+          name: tested-image-${{ github.sha }}
+          path: /tmp/tested-image
+      - name: Publish the tested image without rebuilding it
         env:
           GH_TOKEN: ${{ github.token }}
           GH_USER: ${{ github.actor }}
         run: |
           set -euo pipefail
+          docker load -i /tmp/tested-image/image.tar.gz
+          test "$(docker image inspect --format='{{.Id}}' yolo-api:ci)" = "$(cat /tmp/tested-image/image-id.txt)"
           image="ghcr.io/16minsun-afk/yolo-api:sha-${GITHUB_SHA}"
+          docker tag yolo-api:ci "$image"
           printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$GH_USER" --password-stdin
           trap 'docker logout ghcr.io' EXIT
-          docker build --pull \
-            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
-            --label "org.opencontainers.image.revision=${GITHUB_SHA}" -t "$image" .
           docker push "$image"
           digest=$(docker inspect --format='{{index .RepoDigests 0}}' "$image")
-          printf '### Published CPU API image\n\n`%s`\n\nUse its sha256 digest in Deploy. No model is included.\n' "$digest" >> "$GITHUB_STEP_SUMMARY"
+          printf '### Published tested CPU API image\n\n`%s`\n\nUse its sha256 digest in Deploy. No model is included.\n' "$digest" >> "$GITHUB_STEP_SUMMARY"
